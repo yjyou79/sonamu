@@ -40,18 +40,46 @@ BLOCKED_REPLY = ("지금 이 이야기는 제가 이 자리에서 충분히 다�
 
 app = FastAPI()
 STATIC = Path(__file__).parent / "static"
+
+
+@app.middleware("http")
+async def no_stale_files(request, call_next):
+    # 앱을 고친 뒤에도 브라우저가 예전 화면 파일을 쓰지 않도록 매번 확인하게 한다
+    response = await call_next(request)
+    response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 _client = None
 
 
+def _api_key() -> str:
+    # .env를 매번 다시 읽어, 키를 넣은 뒤 서버를 재시작하지 않아도 되게 한다
+    load_dotenv(override=True)
+    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+    # 웹페이지에서 복사할 때 딸려 오는 보이지 않는 문자(폭 없는 공백 등)를 지운다
+    return "".join(ch for ch in key if 33 <= ord(ch) < 127)
+
+
+def _log_error(where: str, e: Exception) -> None:
+    """오류를 기록하되 API 키는 남기지 않는다."""
+    msg = str(e)
+    for secret in (os.getenv("GEMINI_API_KEY"), os.getenv("GOOGLE_API_KEY"), _api_key()):
+        if secret:
+            msg = msg.replace(secret, "[API 키]")
+    if isinstance(e, UnicodeError):
+        msg = "키나 요청에 영문이 아닌 문자가 섞여 있어요"
+    print(f"{where}: {type(e).__name__}: {msg[:300]}")
+
+
 def _has_key() -> bool:
-    return bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    return bool(_api_key())
 
 
 def _gemini() -> genai.Client:
     global _client
-    if _client is None:
-        _client = genai.Client()  # GEMINI_API_KEY 환경변수(.env)를 읽는다
-    return _client
+    key = _api_key()
+    if _client is None or _client[0] != key:
+        _client = (key, genai.Client(api_key=key))
+    return _client[1]
 
 
 def _gemini_error(e: Exception) -> str:
@@ -123,7 +151,7 @@ def _stream_reply(client_id: str):
     """현재 회기 기록으로 상담사 답변을 스트리밍하고, 끝나면 저장한다."""
     c = _get(client_id)
     if not _has_key():
-        yield _sse("error", "아직 Gemini API 키가 없어요. .env 파일에 GEMINI_API_KEY를 넣고 서버를 다시 실행해 주세요.")
+        yield _sse("error", "아직 Gemini API 키가 없어요. 소나무 폴더의 .env 파일에 GEMINI_API_KEY를 넣고 저장한 뒤 다시 눌러 주세요.")
         return
     yield _sse("status", "thinking")
     text = ""
@@ -151,7 +179,7 @@ def _stream_reply(client_id: str):
         yield _sse("error", _gemini_error(e))
         return
     except Exception as e:  # 네트워크 오류 등
-        print("Gemini 호출 실패:", repr(e))
+        _log_error("Gemini 호출 실패", e)
         yield _sse("error", _gemini_error(e))
         return
 
@@ -176,7 +204,7 @@ def _review_safe(client_id: str):
     try:
         _review(client_id, final=False)
     except Exception as e:  # 중간 갱신 실패는 상담을 방해하지 않는다
-        print("중간 기억 갱신 실패:", e)
+        _log_error("중간 기억 갱신 실패", e)
 
 
 def _review(client_id: str, final: bool) -> dict | None:
@@ -338,7 +366,7 @@ def end_session(client_id: str):
     try:
         updated = _review(client_id, final=True)
     except Exception as e:
-        print("회기 정리 실패:", repr(e))
+        _log_error("회기 정리 실패", e)
         raise HTTPException(502, _gemini_error(e))
     if updated is None:
         raise HTTPException(502, "회기 정리에 실패했어요. 다시 시도해 주세요.")

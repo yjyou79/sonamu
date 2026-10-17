@@ -212,6 +212,7 @@ async function streamFrom(path, body) {
   const fresh = await api(`/api/clients/${state.id}`).then((r) => r.json()).catch(() => null);
   if (fresh) { state = fresh; renderMemory(); }
   if (!failed) $("#input").focus();
+  return failed ? bubble.textContent : null;
 }
 
 async function send(text, stem) {
@@ -220,10 +221,22 @@ async function send(text, stem) {
 }
 
 $("#startBtn").onclick = async () => {
+  if (busy) return;
+  $("#startError").hidden = true;
   state.active = { number: state.sessions.length + 1, started: new Date().toISOString(), messages: [] };
-  renderMode();
   renderLog();
-  await streamFrom(`/api/clients/${state.id}/session/start`);
+  // 첫 인사를 받는 동안 대화 화면을 보여 준다
+  $("#startPane").hidden = true;
+  $("#log").hidden = false;
+  const error = await streamFrom(`/api/clients/${state.id}/session/start`);
+  if (error) {
+    // 시작에 실패하면 시작 화면으로 돌아가 이유를 보여 준다
+    renderMode();
+    $("#startError").textContent = error;
+    $("#startError").hidden = false;
+  } else {
+    renderMode();
+  }
 };
 
 $("#composer").onsubmit = (e) => {

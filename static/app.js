@@ -91,6 +91,10 @@ function renderMode() {
               : "상담 전에 마음 상태, 기질과 성격, 문장완성을 점검하면 윤슬이 결과를 해석해 드리고, 그 해석에서 상담을 시작할 수 있어요.")
     : `${name}다시 와 주셨네요. 지난 ${n - 1}번의 이야기를 기억하고 있어요. ${n}번째 상담을 시작할까요?`;
   $("#startBtn").textContent = n === 1 ? "첫 상담 시작하기" : `${n}번째 상담 시작하기`;
+  // 첫 상담 전에는 점검 → 해석 → 상담 흐름을 보여 준다
+  $("#startSteps").hidden = n !== 1;
+  $("#step1").classList.toggle("done", state.tests.length > 0 || state.sct.length > 0);
+  $("#step2").classList.toggle("done", !!state.interpretation);
   // 첫 상담 전 점검을 아직 안 했다면 점검을 먼저 권한다
   const suggestTest = n === 1 && !tested;
   $("#testBtn").textContent = tested ? "마음 점검 다시 하기" : "마음 점검 먼저 하기 · 약 20분";
@@ -641,6 +645,7 @@ function renderMemory() {
 
 $("#openMemory").onclick = () => $("#memory").classList.add("open");
 $("#closeMemory").onclick = () => $("#memory").classList.remove("open");
+$("#scrim").onclick = () => $("#memory").classList.remove("open");
 $("#leave").onclick = () => { storage.del("clientId"); state = null; showWelcome(); };
 $("#forget").onclick = async () => {
   if (!confirm("윤슬이 기억하는 모든 기록(상담 내용, 문장완성, 이해한 것들)을 지울까요? 되돌릴 수 없어요.")) return;

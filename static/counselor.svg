@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="상담사 윤슬">
+  <style>
+    .eyes { transform-origin: 100px 95px; animation: blink 6s infinite; }
+    @keyframes blink { 0%, 95%, 100% { transform: scaleY(1); } 97% { transform: scaleY(0.12); } }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ECE9E3"/>
+      <stop offset="1" stop-color="#D3DAD0"/>
+    </linearGradient>
+    <linearGradient id="jacket" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#35424F"/>
+      <stop offset="1" stop-color="#232C35"/>
+    </linearGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3D332E"/>
+      <stop offset="1" stop-color="#1E1917"/>
+    </linearGradient>
+    <clipPath id="frame"><circle cx="100" cy="100" r="100"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="200" height="200" fill="url(#bg)"/>
+    <circle cx="156" cy="46" r="50" fill="#FFFFFF" opacity="0.3"/>
+
+    <g transform="translate(-14 -10) scale(1.14)">
+      <!-- 뒷머리: 어깨에 닿는 단발 -->
+      <path d="M66 94 C62 58 80 38 102 38 C126 38 141 58 137 94
+               C136 112 139 124 143 134 C136 140 126 140 118 136 L84 136
+               C76 140 64 140 57 134 C62 124 66 112 66 94 Z" fill="url(#hair)"/>
+
+      <g transform="translate(0 -6)">
+      <!-- 목 -->
+      <path d="M89 114 L89 146 L111 146 L111 114 Z" fill="#E7C1A6"/>
+      <path d="M89 118 Q100 130 111 118 L111 127 Q100 135 89 127 Z" fill="#D2A68A" opacity="0.65"/>
+
+      <!-- 재킷 -->
+      <path d="M24 214 C26 170 48 150 82 144 L118 144 C152 150 174 170 176 214 Z" fill="url(#jacket)"/>
+      <path d="M84 143 L116 143 L112 158 Q100 166 88 158 Z" fill="#F2EDE4"/>
+      <path d="M87 146 Q100 155 113 146" stroke="#DDD6CA" stroke-width="1.3" fill="none"/>
+      <path d="M82 144 L96 182 L85 196 L64 157 Z" fill="#40505E"/>
+      <path d="M118 144 L104 182 L115 196 L136 157 Z" fill="#40505E"/>
+      <circle cx="123" cy="166" r="2.4" fill="#C9A66F"/>
+      </g>
+
+      <!-- 얼굴 -->
+      <path d="M74 89 C74 66 86 54 100 54 C114 54 126 66 126 89 C126 109 115 123 100 125 C85 123 74 109 74 89 Z" fill="#F1D4BF"/>
+      <!-- 오른쪽 귀 (머리를 귀 뒤로 넘김) + 귀걸이 -->
+      <path d="M125.5 91 C131 89 132.5 100 126.5 103.5" fill="#E7C1A6"/>
+      <circle cx="128" cy="106.5" r="1.7" fill="#C9A66F"/>
+
+      <!-- 앞머리: 왼쪽 가르마에서 오른쪽으로 넘긴 머리 -->
+      <path d="M86 44 C108 38 132 52 131 82 L126.5 88
+               C124 76 116 68 104 66 C96 64.5 90 60 86 52 Z" fill="url(#hair)"/>
+      <path d="M86 44 C76 48 70 62 70 80 C70 88 71 96 72 104 L76 104
+               C75 86 78 66 86 52 Z" fill="url(#hair)"/>
+      <path d="M88 50 C96 60 110 64 122 72" stroke="#55483F" stroke-width="1" fill="none" opacity="0.6"/>
+
+      <!-- 눈썹 -->
+      <path d="M81.5 84.5 Q87 82 92.5 84" stroke="#3A302C" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+      <path d="M107.5 84 Q113 82 118.5 84.5" stroke="#3A302C" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+
+      <!-- 눈: 부드럽게 뜬 눈 -->
+      <g class="eyes">
+        <path d="M82.5 94.5 Q87 89.8 91.5 94.5 Q87 97.6 82.5 94.5 Z" fill="#FBF7F2"/>
+        <path d="M108.5 94.5 Q113 89.8 117.5 94.5 Q113 97.6 108.5 94.5 Z" fill="#FBF7F2"/>
+        <circle cx="87" cy="94" r="2.6" fill="#2A2321"/>
+        <circle cx="113" cy="94" r="2.6" fill="#2A2321"/>
+        <circle cx="87.9" cy="93.1" r="0.7" fill="#FFFFFF"/>
+        <circle cx="113.9" cy="93.1" r="0.7" fill="#FFFFFF"/>
+        <path d="M82 94.6 Q87 89.4 92 94.6" stroke="#2A2321" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+        <path d="M108 94.6 Q113 89.4 118 94.6" stroke="#2A2321" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+      </g>
+
+      <!-- 얇은 안경 -->
+      <g stroke="#8E7964" stroke-width="1" fill="none">
+        <rect x="78.5" y="87.5" width="17" height="13" rx="5.5"/>
+        <rect x="104.5" y="87.5" width="17" height="13" rx="5.5"/>
+        <path d="M95.5 92.5 Q100 90.5 104.5 92.5"/>
+        <path d="M121.5 92 L126 91"/>
+      </g>
+
+      <!-- 코, 입 -->
+      <path d="M100.5 99 Q98.6 105.5 100.8 107.8" stroke="#CDA085" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+      <path d="M94.5 114.5 Q100 118 105.5 114.5" stroke="#A66857" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

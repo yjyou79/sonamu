@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>윤슬 상담실</title>
+<link rel="icon" href="/static/counselor.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- 입장 화면 -->
+<main id="welcome" class="screen">
+  <div class="welcome-card">
+    <img src="/static/counselor.svg" class="avatar xl" alt="">
+    <h1>윤슬 상담실</h1>
+    <p class="lead">물결 위에 내려앉은 햇살처럼, 천천히 당신의 마음을 함께 들여다볼게요.<br>
+      지난 이야기를 기억하고, 다음 만남에서 이어갑니다.</p>
+
+    <div id="returning" class="returning" hidden>
+      <h2>다시 오셨나요?</h2>
+      <ul id="clientList"></ul>
+    </div>
+
+    <form id="newForm" class="new-form">
+      <label for="nickname">처음이시라면, 어떻게 불러 드릴까요?</label>
+      <div class="row">
+        <input id="nickname" maxlength="20" placeholder="이름이나 별명 (비워도 괜찮아요)" autocomplete="off">
+        <button class="primary" type="submit">상담실 들어가기</button>
+      </div>
+    </form>
+
+    <p class="fineprint">윤슬은 AI 상담사예요. 진단이나 처방을 하지 않으며 전문 치료를 대신하지 않아요.
+      지금 위험하다고 느낀다면 <b>자살예방상담전화 109</b> · <b>정신건강위기상담 1577-0199</b> · 긴급 <b>112/119</b>로 바로 연락해 주세요.
+      대화는 답변을 만들기 위해 Google Gemini로 전송돼요.</p>
+    <p id="keyWarn" class="warn" hidden></p>
+  </div>
+</main>
+
+<!-- 상담실 -->
+<div id="room" class="screen" hidden>
+  <aside id="memory" class="memory">
+    <div class="memory-head">
+      <h2>윤슬의 기억</h2>
+      <button class="icon" id="closeMemory" aria-label="닫기">✕</button>
+    </div>
+    <p class="hint">상담하면서 윤슬이 이해하게 된 것들이에요. 회기가 끝날 때마다 다시 정리돼요.</p>
+
+    <section>
+      <h3>함께 알아가는 중</h3>
+      <div class="meter"><span>기본 이야기</span><div class="bar"><i id="barIntake"></i></div><em id="numIntake"></em></div>
+      <div class="meter"><span>문장완성</span><div class="bar"><i id="barSct"></i></div><em id="numSct"></em></div>
+    </section>
+
+    <section id="formulationBox"></section>
+    <section id="sctBox"></section>
+    <section id="sessionsBox"></section>
+
+    <div class="memory-foot">
+      <button class="link" id="leave">다른 사람으로 들어가기</button>
+      <button class="link danger" id="forget">내 기록 모두 지우기</button>
+    </div>
+  </aside>
+
+  <section class="chat">
+    <header class="chat-head">
+      <img src="/static/counselor.svg" class="avatar" id="headAvatar" alt="">
+      <div class="who">
+        <strong>윤슬 상담사</strong>
+        <span id="status">곁에 있어요</span>
+      </div>
+      <button class="ghost" id="openMemory">기억 보기</button>
+      <button class="ghost" id="endBtn" hidden>오늘 상담 마치기</button>
+    </header>
+
+    <div id="log" class="log" aria-live="polite"></div>
+
+    <div id="startPane" class="start-pane" hidden>
+      <img src="/static/counselor.svg" class="avatar lg" alt="">
+      <p id="startText"></p>
+      <button class="primary" id="startBtn">상담 시작하기</button>
+    </div>
+
+    <form id="composer" class="composer" hidden>
+      <textarea id="input" rows="1" placeholder="편하게 이야기해 주세요"></textarea>
+      <button class="primary" type="submit" id="sendBtn">보내기</button>
+    </form>
+    <footer class="crisis">지금 위급하다면 <a href="tel:109">109</a> · <a href="tel:15770199">1577-0199</a> · <a href="tel:112">112</a></footer>
+  </section>
+</div>
+
+<template id="sctTpl">
+  <form class="sct-card">
+    <div class="sct-label">문장완성 · 떠오르는 대로 이어 써 주세요</div>
+    <div class="sct-line"><span class="stem"></span><input class="sct-input" autocomplete="off"></div>
+    <div class="sct-actions">
+      <button type="button" class="link skip">지금은 넘어갈게요</button>
+      <button type="submit" class="primary small">이어 쓰기</button>
+    </div>
+  </form>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

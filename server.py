@@ -333,6 +333,24 @@ def health():
             "vertex": os.getenv("GOOGLE_GENAI_USE_VERTEXAI")}
 
 
+@app.get("/api/diag")
+def diag():
+    """임시 점검: 이 서버에서 Gemini 연결이 되는지와 거절 사유 전문 (키는 가림)."""
+    out = {}
+    for name, call in (("list", lambda: len(list(_gemini().models.list(config={"page_size": 3})))),
+                       ("generate", lambda: _gemini().models.generate_content(
+                           model=FALLBACK_MODEL, contents="ok라고만 답해").text)):
+        try:
+            out[name] = call()
+        except Exception as e:
+            msg = str(e)
+            for s in (os.getenv("GEMINI_API_KEY"), _api_key()):
+                if s:
+                    msg = msg.replace(s, "[KEY]")
+            out[name] = f"{type(e).__name__}: {msg[:600]}"
+    return out
+
+
 @app.get("/api/tests")
 def list_tests():
     return tests.public_tests()

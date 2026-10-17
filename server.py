@@ -59,8 +59,11 @@ def _api_key() -> str:
     # .env를 매번 다시 읽어, 키를 넣은 뒤 서버를 재시작하지 않아도 되게 한다
     load_dotenv(override=True)
     key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
-    # 웹페이지에서 복사할 때 딸려 오는 보이지 않는 문자(폭 없는 공백 등)를 지운다
-    return "".join(ch for ch in key if 33 <= ord(ch) < 127)
+    # 'GEMINI_API_KEY=...' 줄을 통째로 값에 붙여 넣은 경우 (Gemini 키에는 '='가 없다)
+    if "=" in key:
+        key = key.split("=", 1)[1]
+    # 웹페이지에서 복사할 때 딸려 오는 보이지 않는 문자(폭 없는 공백 등)와 따옴표를 지운다
+    return "".join(ch for ch in key if 33 <= ord(ch) < 127 and ch not in "\"'`")
 
 
 def _log_error(where: str, e: Exception) -> None:
@@ -89,7 +92,10 @@ def _gemini() -> genai.Client:
 def _gemini_error(e: Exception) -> str:
     if isinstance(e, errors.APIError):
         if e.code in (400, 401, 403) and "key" in str(e).lower():
-            return "Gemini API 키가 올바르지 않아요. .env 파일의 GEMINI_API_KEY를 확인해 주세요."
+            # 거절 사유(키 오타, 만료, 권한 등)를 그대로 보여 줘 무엇을 고칠지 알 수 있게 한다
+            _log_error("Gemini가 키를 거절함", e)
+            reason = (e.message or "").split(". ")[0][:160]
+            return f"Gemini가 API 키를 받아 주지 않았어요({e.code}: {reason}). GEMINI_API_KEY 값을 확인해 주세요."
         if e.code == 429:
             return "오늘 무료 사용량을 넘었거나 요청이 많아요. 잠시 후 다시 시도해 주세요."
         if e.code == 404:

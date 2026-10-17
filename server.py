@@ -15,9 +15,10 @@ from google.genai import errors, types
 from pydantic import BaseModel
 
 import store
+import tests
 from prompts import (
-    INTAKE_ITEMS, PERSONA, REVIEW_INSTRUCTIONS, REVIEW_SCHEMA, SCT_STEMS, SCT_TARGET,
-    SESSION_START_CUE, build_system,
+    INTAKE_ITEMS, INTERP_INSTRUCTIONS, INTERP_SCHEMA, PERSONA, REVIEW_INSTRUCTIONS, REVIEW_SCHEMA,
+    SCT_STEMS, SCT_TARGET, SESSION_START_CUE, build_system,
 )
 
 load_dotenv()
@@ -130,6 +131,11 @@ def _public(c: dict) -> dict:
             for s in c["sessions"]
         ],
         "active": c["active"],
+        "tests": [{k: r[k] for k in ("test", "title", "short", "score", "max", "level", "date",
+                                     "higher_is_better", "flags", "dims") if k in r}
+                  for r in c.get("tests", [])],
+        "interpretation": {k: v for k, v in (c.get("interpretation") or {}).items()
+                           if k != "counselor_notes"} or None,
         "progress": {
             "intake": sum(1 for i in INTAKE_ITEMS if covered.get(i)),
             "intake_total": len(INTAKE_ITEMS),
@@ -352,6 +358,90 @@ def send_message(client_id: str, body: UserMessage):
             msgs.append(entry)
     store.update(client_id, add)
     return StreamingResponse(_stream_reply(client_id), media_type="text/event-stream")
+
+
+class TestAnswers(BaseModel):
+    answers: list[int]
+
+
+@app.get("/api/tests")
+def list_tests():
+    return tests.public_tests()
+
+
+class SctAnswers(BaseModel):
+    texts: list[str]
+
+
+@app.post("/api/clients/{client_id}/tests/sct")
+def submit_sct(client_id: str, body: SctAnswers):
+    _get(client_id)
+    if len(body.texts) != len(SCT_STEMS):
+        raise HTTPException(400, "응답 수가 올바르지 않아요")
+
+    def save(cl):
+        by_id = {r["id"]: r for r in cl["sct"]}
+        for s, text in zip(SCT_STEMS, body.texts):
+            text = text.strip()[:500]
+            if text:  # 다시 쓰면 새 응답으로 바꾼다
+                by_id[s["id"]] = {"id": s["id"], "domain": s["domain"], "stem": s["stem"],
+                                  "answer": text, "session": 0, "date": _now()[:10]}
+        cl["sct"] = list(by_id.values())
+    c = store.update(client_id, save)
+    return {"answered": sum(1 for t in body.texts if t.strip()), "total": len(c["sct"])}
+
+
+@app.post("/api/clients/{client_id}/interpretation")
+def interpret(client_id: str):
+    """지금까지의 검사 결과를 묶어 해석을 만든다."""
+    c = _get(client_id)
+    if not c.get("tests") and not c["sct"]:
+        raise HTTPException(400, "해석할 검사 결과가 아직 없어요")
+    if not _has_key():
+        raise HTTPException(400, "Gemini API 키가 없어 해석을 만들 수 없어요.")
+    material = "\n".join([
+        f"# 내담자: {c['profile'].get('nickname') or '(이름 없음)'}",
+        "# 검사 결과", *tests.describe_for_counselor(c.get("tests", [])),
+        "# 기질·성격 차원의 의미",
+        *[f"- {name}({group}): {meaning}" for name, group, meaning in tests.TCI_DIMS.values()],
+        "# 문장완성 응답",
+        *[f"- [{r['domain']}] 「{r['stem']}」 → {r['answer']}" for r in c["sct"]],
+    ])
+    try:
+        resp = _gemini().models.generate_content(
+            model=MODEL,
+            contents=material,
+            config=types.GenerateContentConfig(
+                system_instruction=INTERP_INSTRUCTIONS,
+                temperature=0.5,
+                response_mime_type="application/json",
+                response_json_schema=INTERP_SCHEMA,
+                safety_settings=SAFETY,
+            ),
+        )
+        result = json.loads(resp.text or "")
+    except json.JSONDecodeError:
+        raise HTTPException(502, "해석을 만들지 못했어요. 다시 시도해 주세요.")
+    except Exception as e:
+        _log_error("해석 실패", e)
+        raise HTTPException(502, _gemini_error(e))
+    result["date"] = _now()[:10]
+    c = store.update(client_id, lambda cl: cl.__setitem__("interpretation", result))
+    return _public(c)["interpretation"]
+
+
+@app.post("/api/clients/{client_id}/tests/{test_id}")
+def submit_test(client_id: str, test_id: str, body: TestAnswers):
+    _get(client_id)
+    if test_id not in tests.TESTS:
+        raise HTTPException(404, "없는 검사예요")
+    try:
+        result = tests.score(test_id, body.answers)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    result["date"] = _now()[:10]
+    store.update(client_id, lambda cl: cl.setdefault("tests", []).append(result))
+    return {k: v for k, v in result.items() if k != "answers"}
 
 
 @app.post("/api/clients/{client_id}/session/end")

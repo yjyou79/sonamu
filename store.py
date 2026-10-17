@@ -24,6 +24,7 @@ def new_client(nickname: str = "") -> dict:
         "profile": {"nickname": nickname, "intake": {}, "intake_covered": {}},
         "formulation": {},
         "sct": [],
+        "tests": [],  # 마음 점검 결과 (검사할 때마다 쌓여 변화를 볼 수 있다)
         "sessions": [],
         "active": None,  # 진행 중인 회기: {"number", "started", "messages": [...]}
     }

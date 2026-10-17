@@ -1,28 +1,10 @@
 """상담사 '윤슬'의 페르소나와 상담 원칙, 문장완성검사(SCT) 문항."""
 
+from sct_items import SCT_STEMS  # noqa: F401  (server.py도 여기서 가져간다)
+from tests import describe_for_counselor
+
 COUNSELOR_NAME = "윤슬"
 
-# 문장완성검사 문항 (Sacks SCT 영역을 참고해 일상 대화에 녹이기 좋게 다듬은 버전)
-SCT_STEMS = [
-    {"id": "self_1", "domain": "자기개념", "stem": "나는 가끔"},
-    {"id": "self_2", "domain": "자기개념", "stem": "사람들은 나를"},
-    {"id": "self_3", "domain": "자기개념", "stem": "내가 가장 싫어하는 나의 모습은"},
-    {"id": "family_1", "domain": "가족", "stem": "우리 엄마는"},
-    {"id": "family_2", "domain": "가족", "stem": "우리 아버지는"},
-    {"id": "family_3", "domain": "가족", "stem": "어렸을 때 우리 집은"},
-    {"id": "rel_1", "domain": "대인관계", "stem": "내가 정말 믿을 수 있는 사람은"},
-    {"id": "rel_2", "domain": "대인관계", "stem": "사람들과 함께 있을 때 나는"},
-    {"id": "intimacy_1", "domain": "친밀감", "stem": "누군가 나에게 가까이 다가오면"},
-    {"id": "fear_1", "domain": "두려움", "stem": "내가 가장 두려운 것은"},
-    {"id": "fear_2", "domain": "두려움", "stem": "나를 가장 불안하게 만드는 것은"},
-    {"id": "guilt_1", "domain": "죄책감", "stem": "잊고 싶은 일은"},
-    {"id": "past_1", "domain": "과거", "stem": "어렸을 때 나는"},
-    {"id": "future_1", "domain": "미래", "stem": "언젠가 나는"},
-    {"id": "goal_1", "domain": "목표", "stem": "내가 정말 바라는 것은"},
-    {"id": "work_1", "domain": "일·학업", "stem": "일(공부)을 할 때 나는"},
-    {"id": "anger_1", "domain": "감정", "stem": "나를 화나게 하는 것은"},
-    {"id": "sad_1", "domain": "감정", "stem": "나는 ___ 때 가장 외롭다"},
-]
 SCT_TARGET = 12  # 초기 평가에서 다루려는 문항 수
 
 # 초기 면담(접수면접)에서 자연스럽게 알아가려는 기본 정보
@@ -67,6 +49,7 @@ PERSONA = f"""당신은 심리상담사 '{COUNSELOR_NAME}'입니다. 이 앱에�
   예) "...떠오르는 대로, 고민하지 말고 이어서 써 보시겠어요?\\n[[문장완성: 사람들은 나를]]"
   한 응답에 문항은 최대 하나. 내담자가 감정적으로 깊은 이야기를 하는 중이면 그 이야기를 먼저 충분히 다루고, 문항은 미룹니다.
   내담자가 "「문항」 → 응답" 형식으로 답하면, 그 응답을 가볍게 넘기지 말고 단어 선택, 망설임, 다른 응답과의 연결을 짚어 한두 번 더 탐색합니다.
+- [마음 점검 결과]가 있으면 숫자나 등급을 앞세우지 말고 탐색의 재료로 씁니다. 예) "점검하실 때 잠과 집중 쪽에 많이 표시하셨던데, 요즘 밤이 어떠세요?" 결과는 진단이 아니며, 내담자의 실제 경험과 다를 수 있다는 태도를 유지합니다. 이전 결과와 달라졌다면 그 변화를 함께 살펴봅니다.
 - 기본 정보와 문장완성이 어느 정도 모이면, 지금까지 이해한 바(사례개념화)를 내담자에게 쉬운 말로 나눠 보고 상담 목표를 함께 정합니다.
 
 # 안전
@@ -119,6 +102,23 @@ def build_system(client: dict) -> str:
             if val:
                 lines.append(f"- {label}: " + (" / ".join(val) if isinstance(val, list) else val))
 
+    test_lines = describe_for_counselor(client.get("tests", []))
+    if test_lines:
+        lines.append("\n## 마음 점검(자기보고식 검사) 결과")
+        lines += test_lines
+
+    interp = client.get("interpretation")
+    if interp:
+        lines.append(f"\n## 검사 종합 해석 ({interp['date']}에 내담자에게 전달함)")
+        lines.append(interp["overview"])
+        if interp.get("counseling_focus"):
+            lines.append("- 함께 살펴보기로 제안한 주제: " + " / ".join(interp["counseling_focus"]))
+        if interp.get("counselor_notes"):
+            lines.append("- 상담사 메모(내담자 비공개): " + interp["counselor_notes"])
+        if not client["sessions"]:
+            lines.append("- 첫 회기: 내담자는 상담 직전에 이 해석을 읽고 들어왔습니다. 해석을 받아 본 느낌을 먼저 묻고, 내담자가 가장 와닿거나 "
+                         "가장 다르다고 느낀 부분에서 상담을 시작하세요. 해석을 다시 길게 설명하지는 않습니다.")
+
     sct = client.get("sct", [])
     if sct:
         lines.append("\n## 문장완성 응답")
@@ -153,6 +153,48 @@ REVIEW_INSTRUCTIONS = """당신은 방금 끝난(또는 진행 중인) 상담 �
 - 내담자가 실제로 말한 근거가 있는 것만 적습니다. 추측은 '가설:'로 표시합니다.
 - intake_updates에는 이번에 새로 알게 된 기본 정보만 {항목명, 내용} 형태로 적습니다. 항목명은 주어진 기본 정보 목록의 문구를 그대로 씁니다.
 - summary는 다음 회기의 상담사가 읽고 바로 이어갈 수 있도록 4~8문장으로, 내담자의 표현을 살려 씁니다."""
+
+INTERP_INSTRUCTIONS = f"""당신은 상담심리 전문가 '{COUNSELOR_NAME}'입니다. 내담자가 상담 전에 한 마음 점검 결과를 통합해, 내담자에게 직접 건네는 해석을 씁니다.
+
+원칙
+- 진단명이나 병명을 쓰지 않습니다. "~일 수 있어요", "~처럼 보여요"처럼 가설로 말하고, 내담자가 직접 확인해 볼 수 있게 합니다.
+- 점수를 나열하지 말고 의미를 말합니다. 서로 다른 검사를 연결해 하나의 이야기로 엮습니다.
+  예) 위험회피가 높고 자율성이 낮은 기질·성격 + 높은 불안 점수 + 문장완성 '내가 가장 두려운 것은 → 실수하는 것'
+- 문장완성은 내담자의 실제 표현을 짧게 「인용」하며 반복되는 주제(관계, 자기상, 가족, 두려움, 바람)를 찾습니다. 응답이 없거나 짧은 영역도 의미가 있을 수 있으나 단정하지 않습니다.
+- 기질·성격 점수는 규준이 없는 자체 문항의 상대적 경향입니다. '높다/낮다'를 좋고 나쁨으로 말하지 말고, 각 경향이 주는 힘과 대가를 함께 말합니다.
+- 강점을 반드시 구체적으로 찾습니다.
+- 따뜻하고 차분한 존댓말. 내담자를 '당신' 대신 이름(있으면)이나 주어 생략으로 부릅니다.
+- 죽음·자해 생각 응답이 있으면 비난 없이 언급하고, 상담에서 꼭 함께 다루자고 말합니다.
+- counselor_notes는 내담자에게 보이지 않는 상담사용 메모입니다: 사례개념화 가설, 상담 초반에 탐색할 질문 3가지, 주의할 점."""
+
+INTERP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "overview": {"type": "string", "description": "전체를 아우르는 3~5문장"},
+        "mood": {"type": "string", "description": "지금의 마음 상태 해석 (검사가 없으면 빈 문자열)"},
+        "temperament": {"type": "string", "description": "기질(자극추구·위험회피·사회적 민감성·인내력) 해석"},
+        "character": {"type": "string", "description": "성격(자율성·연대감·자기초월) 해석"},
+        "sct_themes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "theme": {"type": "string"},
+                    "quotes": {"type": "array", "items": {"type": "string"}},
+                    "meaning": {"type": "string"},
+                },
+                "required": ["theme", "quotes", "meaning"],
+            },
+        },
+        "strengths": {"type": "array", "items": {"type": "string"}},
+        "growth_points": {"type": "array", "items": {"type": "string"}},
+        "counseling_focus": {"type": "array", "items": {"type": "string"},
+                             "description": "상담에서 함께 살펴보면 좋을 주제 2~4개"},
+        "counselor_notes": {"type": "string"},
+    },
+    "required": ["overview", "mood", "temperament", "character", "sct_themes", "strengths",
+                 "growth_points", "counseling_focus", "counselor_notes"],
+}
 
 REVIEW_SCHEMA = {
     "type": "object",

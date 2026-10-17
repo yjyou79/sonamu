@@ -54,6 +54,7 @@
       <div class="meter"><span>문장완성</span><div class="bar"><i id="barSct"></i></div><em id="numSct"></em></div>
     </section>
 
+    <section id="testsBox"></section>
     <section id="formulationBox"></section>
     <section id="sctBox"></section>
     <section id="sessionsBox"></section>
@@ -80,8 +81,73 @@
     <div id="startPane" class="start-pane" hidden>
       <img src="/static/counselor.svg" class="avatar lg" alt="">
       <p id="startText"></p>
-      <button class="primary" id="startBtn">상담 시작하기</button>
+      <div class="start-actions" id="startActions">
+        <button class="primary" id="startBtn">상담 시작하기</button>
+        <button class="ghost" id="testBtn">마음 점검 먼저 하기</button>
+      </div>
       <p id="startError" class="warn" hidden></p>
+    </div>
+
+    <!-- 마음 점검: 한 문항씩 -->
+    <div id="testPane" class="test-pane" hidden>
+      <!-- 어떤 점검을 할지 고르기 -->
+      <div class="test-card" id="testPick">
+        <div class="result-title">
+          <img src="/static/counselor.svg" class="avatar" alt="">
+          <div>
+            <h2>마음 점검</h2>
+            <p>하고 싶은 점검을 골라 주세요. 모두 마치면 윤슬이 결과를 함께 읽고 해석해 드리고, 그 해석에서 상담을 시작해요.</p>
+          </div>
+        </div>
+        <div id="groupList" class="group-list"></div>
+        <button class="primary wide" id="pickStart">선택한 점검 시작하기</button>
+        <button class="link center" id="pickCancel">나중에 할게요</button>
+      </div>
+
+      <!-- 한 문항씩 -->
+      <div class="test-card" id="testQuestion" hidden>
+        <div class="test-top"><span id="testName"></span><span id="testCount"></span></div>
+        <div class="bar"><i id="testBar"></i></div>
+        <p class="test-intro" id="testIntro"></p>
+        <h2 class="test-q" id="testQ"></h2>
+        <div class="test-options" id="testOptions"></div>
+        <form class="test-text" id="testText" hidden>
+          <textarea id="testTextInput" rows="2" placeholder="떠오르는 대로 이어 써 주세요"></textarea>
+          <div class="test-text-actions">
+            <button type="button" class="link" id="testSkip">건너뛰기</button>
+            <button type="submit" class="primary small">다음</button>
+          </div>
+        </form>
+        <div class="test-nav">
+          <button class="link" id="testBack">이전 문항</button>
+          <button class="link" id="testQuit">여기까지만 할게요</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 마음 점검 결과 -->
+    <div id="resultPane" class="test-pane" hidden>
+      <div class="test-card">
+        <div class="result-title">
+          <img src="/static/counselor.svg" class="avatar" alt="">
+          <div>
+            <h2>마음 점검 결과와 해석</h2>
+            <p>솔직하게 답해 주셔서 고마워요. 이 결과는 진단이 아니라, 지금의 마음을 비춰 보는 참고 자료예요.
+              읽어 보시고 와닿는 부분과 다르게 느껴지는 부분을 상담에서 함께 이야기해요.</p>
+          </div>
+        </div>
+        <div id="resultList"></div>
+        <div id="tciBox" class="tci-box" hidden></div>
+        <div id="interpBox" class="interp-box" hidden></div>
+        <div id="resultCrisis" class="crisis-box" hidden>
+          <strong>요즘 많이 힘드셨던 것 같아요.</strong>
+          죽음이나 자신을 해치는 생각이 든 적이 있다고 답해 주셨어요. 혼자 견디지 않으셔도 괜찮아요.
+          지금 위험하다고 느껴지면 <a href="tel:109">자살예방상담전화 109</a>(24시간) ·
+          <a href="tel:15770199">정신건강위기상담 1577-0199</a>로 바로 연락해 주세요.
+          윤슬과도 이 이야기를 천천히 나눌 수 있어요.
+        </div>
+        <button class="primary" id="resultGo">이 결과를 바탕으로 상담 시작하기</button>
+      </div>
     </div>
 
     <form id="composer" class="composer" hidden>

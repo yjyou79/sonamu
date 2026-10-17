@@ -67,19 +67,36 @@ async function enter(id) {
 
 // ---------- 상담실 ----------
 
+// 상담실 가운데 영역에 보일 화면: start | chat | test | result
+function show(view) {
+  $("#startPane").hidden = view !== "start";
+  $("#log").hidden = view !== "chat";
+  $("#composer").hidden = view !== "chat";
+  $("#testPane").hidden = view !== "test";
+  $("#resultPane").hidden = view !== "result";
+  $("#endBtn").hidden = !isActive();
+}
+
+// 시작 인사가 실패해 대화가 비어 있으면 다시 시작할 수 있게 한다
+function isActive() { return !!state.active && state.active.messages.some((m) => !m.hidden); }
+
 function renderMode() {
-  // 시작 인사가 실패해 대화가 비어 있으면 다시 시작할 수 있게 한다
-  const active = !!state.active && state.active.messages.some((m) => !m.hidden);
-  $("#composer").hidden = !active;
-  $("#endBtn").hidden = !active;
-  $("#log").hidden = !active;
-  $("#startPane").hidden = active;
+  show(isActive() ? "chat" : "start");
   const n = state.sessions.length + 1;
   const name = state.nickname ? `${state.nickname}님, ` : "";
+  const tested = state.tests.length > 0 || !!state.interpretation;
   $("#startText").textContent = n === 1
-    ? `${name}반가워요. 이곳에서는 서두르지 않아도 괜찮아요. 준비되면 첫 상담을 시작해요.`
+    ? `${name}반가워요. 이곳에서는 서두르지 않아도 괜찮아요. ` +
+      (tested ? "마음 점검 결과와 해석을 바탕으로 상담을 시작할게요."
+              : "상담 전에 마음 상태, 기질과 성격, 문장완성을 점검하면 윤슬이 결과를 해석해 드리고, 그 해석에서 상담을 시작할 수 있어요.")
     : `${name}다시 와 주셨네요. 지난 ${n - 1}번의 이야기를 기억하고 있어요. ${n}번째 상담을 시작할까요?`;
   $("#startBtn").textContent = n === 1 ? "첫 상담 시작하기" : `${n}번째 상담 시작하기`;
+  // 첫 상담 전 점검을 아직 안 했다면 점검을 먼저 권한다
+  const suggestTest = n === 1 && !tested;
+  $("#testBtn").textContent = tested ? "마음 점검 다시 하기" : "마음 점검 먼저 하기 · 약 20분";
+  $("#testBtn").className = suggestTest ? "primary" : "ghost";
+  $("#startBtn").className = suggestTest ? "ghost" : "primary";
+  $("#startActions").prepend(suggestTest ? $("#testBtn") : $("#startBtn"));
 }
 
 function renderLog() {
@@ -220,14 +237,16 @@ async function send(text, stem) {
   await streamFrom(`/api/clients/${state.id}/message`, { text, sct_stem: stem || null });
 }
 
-$("#startBtn").onclick = async () => {
+$("#startBtn").onclick = () => startSession();
+
+async function startSession() {
   if (busy) return;
   $("#startError").hidden = true;
   state.active = { number: state.sessions.length + 1, started: new Date().toISOString(), messages: [] };
   renderLog();
   // 첫 인사를 받는 동안 대화 화면을 보여 준다
-  $("#startPane").hidden = true;
-  $("#log").hidden = false;
+  show("chat");
+  $("#composer").hidden = true;
   const error = await streamFrom(`/api/clients/${state.id}/session/start`);
   if (error) {
     // 시작에 실패하면 시작 화면으로 돌아가 이유를 보여 준다
@@ -237,7 +256,245 @@ $("#startBtn").onclick = async () => {
   } else {
     renderMode();
   }
+}
+
+// ---------- 마음 점검 ----------
+
+let defs = null;  // { groups, tests }
+const run = { queue: [], ti: 0, qi: 0, answers: [], finished: 0 };
+const testById = (id) => defs.tests.find((t) => t.id === id);
+
+async function startTests() {
+  if (busy) return;
+  defs ??= await api("/api/tests").then((r) => r.json());
+  // 어떤 점검을 할지 고르기: 아직 안 한 것은 기본으로 선택
+  const list = $("#groupList");
+  list.innerHTML = "";
+  for (const g of defs.groups) {
+    const done = g.tests.every((id) => id === "sct" ? state.sct.length > 0 : state.tests.some((r) => r.test === id));
+    const label = document.createElement("label");
+    label.className = "group-card";
+    label.innerHTML = `<input type="checkbox"><div><strong></strong><span></span></div><em></em>`;
+    label.querySelector("input").checked = !done;
+    label.querySelector("input").value = g.id;
+    label.querySelector("strong").textContent = g.title;
+    label.querySelector("span").textContent = g.desc;
+    label.querySelector("em").textContent = done ? "완료 · 다시 하기" : `약 ${g.minutes}분`;
+    list.append(label);
+  }
+  $("#testPick").hidden = false;
+  $("#testQuestion").hidden = true;
+  show("test");
+}
+
+$("#pickStart").onclick = () => {
+  const chosen = [...document.querySelectorAll("#groupList input:checked")].map((i) => i.value);
+  if (!chosen.length) return finishTests(false);
+  const queue = defs.groups.filter((g) => chosen.includes(g.id)).flatMap((g) => g.tests.map(testById));
+  Object.assign(run, { queue, ti: 0, qi: 0, answers: [], finished: 0 });
+  $("#testPick").hidden = true;
+  $("#testQuestion").hidden = false;
+  renderQuestion();
 };
+$("#pickCancel").onclick = () => renderMode();
+
+function renderQuestion() {
+  const t = run.queue[run.ti];
+  const total = run.queue.reduce((s, x) => s + x.items.length, 0);
+  const done = run.queue.slice(0, run.ti).reduce((s, x) => s + x.items.length, 0) + run.qi;
+  $("#testName").textContent = `${run.ti + 1}/${run.queue.length} · ${t.title}`;
+  $("#testCount").textContent = `${run.qi + 1} / ${t.items.length}`;
+  $("#testBar").style.width = `${(done / total) * 100}%`;
+  $("#testIntro").textContent = t.intro;
+  const text = t.kind === "text";
+  const stem = t.items[run.qi];
+  $("#testQ").textContent = text ? (stem.includes("___") ? stem : `${stem} …`) : stem;
+  $("#testOptions").hidden = text;
+  $("#testText").hidden = !text;
+  if (text) {
+    const input = $("#testTextInput");
+    input.value = run.answers[run.qi] || "";
+    setTimeout(() => input.focus(), 30);
+  } else {
+    const box = $("#testOptions");
+    box.innerHTML = "";
+    t.options.forEach((label, v) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "option" + (run.answers[run.qi] === v ? " chosen" : "");
+      b.textContent = label;
+      b.onclick = () => answer(v);
+      box.append(b);
+    });
+  }
+  $("#testBack").disabled = run.qi === 0;
+}
+
+async function answer(v) {
+  if (busy) return;
+  const t = run.queue[run.ti];
+  run.answers[run.qi] = v;
+  if (run.qi < t.items.length - 1) { run.qi++; return renderQuestion(); }
+  // 한 검사를 마치면 바로 저장해, 중간에 그만둬도 마친 검사는 남는다
+  busy = true;
+  try {
+    const body = t.kind === "text"
+      ? { texts: t.items.map((_, i) => run.answers[i] || "") }
+      : { answers: run.answers };
+    await api(`/api/clients/${state.id}/tests/${t.id}`, { method: "POST", body: JSON.stringify(body) });
+    run.finished++;
+  } catch (e) {
+    busy = false;
+    return alert(e.message);
+  }
+  busy = false;
+  if (run.ti < run.queue.length - 1) {
+    Object.assign(run, { ti: run.ti + 1, qi: 0, answers: [] });
+    renderQuestion();
+  } else {
+    finishTests(true);
+  }
+}
+
+$("#testText").onsubmit = (e) => { e.preventDefault(); answer($("#testTextInput").value.trim()); };
+$("#testTextInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#testText").requestSubmit(); }
+});
+$("#testSkip").onclick = () => answer("");
+$("#testBack").onclick = () => {
+  const t = run.queue[run.ti];
+  if (t.kind === "text") run.answers[run.qi] = $("#testTextInput").value.trim();
+  if (run.qi > 0) { run.qi--; renderQuestion(); }
+};
+$("#testQuit").onclick = () => finishTests(run.finished > 0);
+$("#testBtn").onclick = () => startTests();
+
+async function finishTests(reinterpret) {
+  state = await api(`/api/clients/${state.id}`).then((r) => r.json());
+  renderMemory();
+  if (!state.tests.length && !state.sct.length) return renderMode();
+  showResults(reinterpret);
+}
+
+// 검사별 최신 결과 + 해석. reinterpret이면 해석을 새로 만든다
+async function showResults(reinterpret) {
+  const latest = {};
+  for (const r of state.tests) latest[r.test] = r;
+
+  const list = $("#resultList");
+  list.innerHTML = "";
+  for (const r of Object.values(latest)) {
+    if (r.test === "tci") continue;
+    const row = document.createElement("div");
+    row.className = "result-row";
+    row.innerHTML = `<div class="result-head"><strong></strong><span class="level"></span></div>
+      <div class="bar"><i></i></div><small></small>`;
+    row.querySelector("strong").textContent = r.title;
+    row.querySelector(".level").textContent = r.level;
+    row.querySelector("i").style.width = `${(r.score / r.max) * 100}%`;
+    row.querySelector("small").textContent = `${r.score} / ${r.max}점` + (r.higher_is_better ? " · 높을수록 자신을 긍정적으로 봐요" : "");
+    list.append(row);
+  }
+  if (state.sct.length) {
+    const row = document.createElement("div");
+    row.className = "result-row";
+    row.innerHTML = `<div class="result-head"><strong>문장완성</strong><span class="level"></span></div>`;
+    row.querySelector(".level").textContent = `${state.sct.length}문장 작성`;
+    list.append(row);
+  }
+
+  const tci = latest.tci;
+  $("#tciBox").hidden = !tci;
+  if (tci) {
+    const box = $("#tciBox");
+    box.innerHTML = `<h3>기질과 성격</h3><p class="note">이 앱의 자체 문항(TCI 모델 참고)으로 본 상대적 경향이에요. 높고 낮음에 좋고 나쁨은 없어요.</p>`;
+    for (const group of ["기질", "성격"]) {
+      const sec = document.createElement("div");
+      sec.className = "tci-group";
+      sec.innerHTML = `<span class="tci-label"></span>`;
+      sec.firstChild.textContent = group;
+      for (const d of Object.values(tci.dims).filter((d) => d.group === group)) {
+        const row = document.createElement("div");
+        row.className = "tci-row";
+        row.title = d.meaning;
+        row.innerHTML = `<span></span><div class="bar"><i></i></div><em></em>`;
+        row.querySelector("span").textContent = d.name;
+        row.querySelector("i").style.width = `${d.pct}%`;
+        row.querySelector("em").textContent = d.level;
+        sec.append(row);
+      }
+      box.append(sec);
+    }
+  }
+
+  $("#resultCrisis").hidden = !latest.phq9?.flags.includes("self_harm_thoughts");
+  $("#resultGo").textContent = isActive() ? "상담으로 돌아가기" : "이 해석을 바탕으로 상담 시작하기";
+  show("result");
+
+  const box = $("#interpBox");
+  box.hidden = false;
+  if (!reinterpret && state.interpretation) return renderInterpretation(state.interpretation);
+  box.innerHTML = `<div class="interp-loading"><span class="typing"><i></i><i></i><i></i></span> 윤슬이 결과를 함께 읽고 해석하고 있어요…</div>`;
+  $("#resultGo").disabled = true;
+  try {
+    state.interpretation = await api(`/api/clients/${state.id}/interpretation`, { method: "POST" }).then((r) => r.json());
+    renderInterpretation(state.interpretation);
+  } catch (e) {
+    box.innerHTML = `<p class="warn"></p><button class="link" id="interpRetry">다시 해석하기</button>`;
+    box.querySelector("p").textContent = e.message;
+    $("#interpRetry").onclick = () => showResults(true);
+  }
+  $("#resultGo").disabled = false;
+}
+
+function renderInterpretation(it) {
+  const box = $("#interpBox");
+  box.innerHTML = "";
+  const add = (title, body) => {
+    if (!body || (Array.isArray(body) && !body.length)) return;
+    const sec = document.createElement("section");
+    const h = document.createElement("h3");
+    h.textContent = title;
+    sec.append(h);
+    if (Array.isArray(body)) {
+      const ul = document.createElement("ul");
+      for (const b of body) { const li = document.createElement("li"); li.textContent = b; ul.append(li); }
+      sec.append(ul);
+    } else {
+      const p = document.createElement("p");
+      p.textContent = body;
+      sec.append(p);
+    }
+    box.append(sec);
+  };
+  add("윤슬의 해석", it.overview);
+  add("지금의 마음", it.mood);
+  add("타고난 기질", it.temperament);
+  add("살아오며 자란 성격", it.character);
+  if (it.sct_themes?.length) {
+    const sec = document.createElement("section");
+    sec.innerHTML = "<h3>문장완성에서 보이는 이야기</h3>";
+    for (const th of it.sct_themes) {
+      const d = document.createElement("div");
+      d.className = "theme";
+      d.innerHTML = "<strong></strong><blockquote></blockquote><p></p>";
+      d.querySelector("strong").textContent = th.theme;
+      d.querySelector("blockquote").textContent = th.quotes.map((q) => `「${q.replace(/^「|」$/g, "")}」`).join("  ");
+      d.querySelector("p").textContent = th.meaning;
+      sec.append(d);
+    }
+    box.append(sec);
+  }
+  add("당신의 힘", it.strengths);
+  add("성장의 실마리", it.growth_points);
+  add("상담에서 함께 살펴보고 싶은 것", it.counseling_focus);
+  const foot = document.createElement("p");
+  foot.className = "note";
+  foot.textContent = `${it.date} 해석 · 진단이 아닌 가설이에요. 상담하며 함께 고쳐 나가요.`;
+  box.append(foot);
+}
+
+$("#resultGo").onclick = () => (isActive() ? renderMode() : startSession());
 
 $("#composer").onsubmit = (e) => {
   e.preventDefault();
@@ -294,8 +551,55 @@ function renderProgress() {
   $("#numSct").textContent = `${Math.min(p.sct, p.sct_total)}/${p.sct_total}`;
 }
 
+function renderTests() {
+  const box = $("#testsBox");
+  box.innerHTML = "<h3>마음 점검</h3>";
+  // 검사별 최신 결과와 직전 결과
+  const byTest = {};
+  for (const r of state.tests) (byTest[r.test] ??= []).push(r);
+  const ul = document.createElement("ul");
+  ul.className = "test-list";
+  for (const rs of Object.values(byTest)) {
+    const cur = rs[rs.length - 1], prev = rs[rs.length - 2];
+    const li = document.createElement("li");
+    li.innerHTML = "<span></span><b></b>";
+    li.querySelector("span").textContent = cur.short;
+    let txt = "완료";
+    if (cur.test !== "tci") {
+      txt = `${cur.level} · ${cur.score}점`;
+      if (prev) { const d = cur.score - prev.score; txt += ` (${d >= 0 ? "+" : ""}${d})`; }
+    }
+    li.querySelector("b").textContent = txt;
+    ul.append(li);
+  }
+  if (state.sct.length) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span>문장완성</span><b></b>`;
+    li.querySelector("b").textContent = `${state.sct.length}문장`;
+    ul.append(li);
+  }
+  if (ul.children.length) box.append(ul);
+  else box.insertAdjacentHTML("beforeend", `<p class="empty">아직 점검 전이에요.</p>`);
+  const actions = document.createElement("div");
+  actions.className = "link-row";
+  if (state.interpretation) {
+    const v = document.createElement("button");
+    v.className = "link";
+    v.textContent = "해석 다시 보기";
+    v.onclick = () => { $("#memory").classList.remove("open"); showResults(false); };
+    actions.append(v);
+  }
+  const b = document.createElement("button");
+  b.className = "link";
+  b.textContent = state.tests.length || state.sct.length ? "다시 점검하기" : "점검하기";
+  b.onclick = () => { $("#memory").classList.remove("open"); startTests(); };
+  actions.append(b);
+  box.append(actions);
+}
+
 function renderMemory() {
   renderProgress();
+  renderTests();
   const f = state.formulation || {};
   const fb = $("#formulationBox");
   fb.innerHTML = "<h3>지금까지의 이해</h3>";
@@ -311,10 +615,14 @@ function renderMemory() {
   const sb = $("#sctBox");
   sb.innerHTML = "";
   if (state.sct.length) {
-    sb.innerHTML = "<h3>문장완성</h3>";
+    // 길어지기 쉬워 접어 둔다
+    const det = document.createElement("details");
+    det.innerHTML = "<summary></summary>";
+    det.firstChild.textContent = `문장완성 ${state.sct.length}개`;
     const ul = document.createElement("ul"); ul.className = "sct-list";
     for (const r of state.sct) { const li = document.createElement("li"); li.innerHTML = "<b></b> "; li.firstChild.textContent = r.stem; li.append(r.answer); ul.append(li); }
-    sb.append(ul);
+    det.append(ul);
+    sb.append(det);
   }
 
   const hb = $("#sessionsBox");

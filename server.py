@@ -328,7 +328,9 @@ def health():
     key = _api_key()
     raw = os.getenv("GEMINI_API_KEY") or ""
     return {"ok": True, "model": MODEL, "key_fp": hashlib.sha256(key.encode()).hexdigest()[:8],
-            "key_len": len(key), "raw_len": len(raw)}
+            "key_len": len(key), "raw_len": len(raw), "genai": genai.__version__,
+            "google_api_key_set": bool(os.getenv("GOOGLE_API_KEY")),
+            "vertex": os.getenv("GOOGLE_GENAI_USE_VERTEXAI")}
 
 
 @app.get("/api/tests")

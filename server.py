@@ -1,6 +1,5 @@
 """마음상담 '윤슬' — 기억하는 AI 심리상담 앱 서버 (Google Gemini 사용)."""
 
-import hashlib
 import json
 import os
 import time
@@ -324,31 +323,7 @@ def health():
     if not _has_key():
         return {"ok": False, "model": MODEL,
                 "problem": "Gemini API 키가 아직 없어요. GEMINI_API_KEY를 설정해 주세요 (README 참고)."}
-    # 임시 점검: 키 값을 드러내지 않고 같은 키인지 비교하기 위한 해시 앞부분과 길이
-    key = _api_key()
-    raw = os.getenv("GEMINI_API_KEY") or ""
-    return {"ok": True, "model": MODEL, "key_fp": hashlib.sha256(key.encode()).hexdigest()[:8],
-            "key_len": len(key), "raw_len": len(raw), "genai": genai.__version__,
-            "google_api_key_set": bool(os.getenv("GOOGLE_API_KEY")),
-            "vertex": os.getenv("GOOGLE_GENAI_USE_VERTEXAI")}
-
-
-@app.get("/api/diag")
-def diag():
-    """임시 점검: 이 서버에서 Gemini 연결이 되는지와 거절 사유 전문 (키는 가림)."""
-    out = {}
-    for name, call in (("list", lambda: len(list(_gemini().models.list(config={"page_size": 3})))),
-                       ("generate", lambda: _gemini().models.generate_content(
-                           model=FALLBACK_MODEL, contents="ok라고만 답해").text)):
-        try:
-            out[name] = call()
-        except Exception as e:
-            msg = str(e)
-            for s in (os.getenv("GEMINI_API_KEY"), _api_key()):
-                if s:
-                    msg = msg.replace(s, "[KEY]")
-            out[name] = f"{type(e).__name__}: {msg[:600]}"
-    return out
+    return {"ok": True, "model": MODEL}
 
 
 @app.get("/api/tests")

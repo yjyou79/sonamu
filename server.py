@@ -2,7 +2,7 @@
 
 import json
 import os
-import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +23,9 @@ from prompts import (
 
 load_dotenv()
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+# 기본 모델이 붐벼 계속 거절(5xx)할 때 마지막으로 쓰는 가벼운 모델
+FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
+ATTEMPT_MODELS = [MODEL, MODEL, FALLBACK_MODEL]
 REVIEW_EVERY = 6  # 회기 중 이 횟수만큼 대화할 때마다 기억을 중간 갱신
 
 # 상담에서는 자해·학대 같은 주제를 피하지 않고 다뤄야 하므로, 명백히 위험한 경우만 차단한다
@@ -97,6 +100,17 @@ def _gemini_error(e: Exception) -> str:
     return "인터넷 연결을 확인해 주세요."
 
 
+def _generate(**kw):
+    """Gemini가 잠깐 바쁠 때(5xx)는 다시 시도하고, 마지막엔 가벼운 모델로 넘긴다."""
+    for attempt, model in enumerate(ATTEMPT_MODELS):
+        try:
+            return _gemini().models.generate_content(model=model, **kw)
+        except errors.ServerError:
+            if attempt == len(ATTEMPT_MODELS) - 1:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+
+
 def _contents(messages: list[dict]) -> list[dict]:
     """대화 기록을 Gemini 형식으로 바꾼다 (같은 역할이 연달아 오면 합친다)."""
     out: list[dict] = []
@@ -109,16 +123,11 @@ def _contents(messages: list[dict]) -> list[dict]:
     return out
 
 
-# ---------- 공용 ----------
 
-def _get(client_id: str) -> dict:
-    c = store.load(client_id)
-    if c is None:
-        raise HTTPException(404, "내담자를 찾을 수 없어요")
-    return c
-
+# ---------- 기록 (브라우저에 저장되고 요청마다 함께 온다) ----------
 
 def _public(c: dict) -> dict:
+    """화면에 보여 줄 모양. 상담사 메모처럼 화면에 쓰지 않는 것은 뺀다."""
     covered = c["profile"].get("intake_covered", {})
     return {
         "id": c["id"],
@@ -145,6 +154,18 @@ def _public(c: dict) -> dict:
     }
 
 
+def _reply(c: dict) -> dict:
+    """갱신된 전체 기록(브라우저가 저장)과 화면용 모양을 함께 돌려준다."""
+    return {"client": c, "view": _public(c)}
+
+
+def _record(raw: dict) -> dict:
+    try:
+        return store.normalize(raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 def _sse(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -153,70 +174,64 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _stream_reply(client_id: str):
-    """현재 회기 기록으로 상담사 답변을 스트리밍하고, 끝나면 저장한다."""
-    c = _get(client_id)
+def _stream_reply(c: dict):
+    """현재 회기 기록으로 상담사 답변을 스트리밍하고, 끝나면 갱신된 기록을 보낸다."""
     if not _has_key():
-        yield _sse("error", "아직 Gemini API 키가 없어요. 소나무 폴더의 .env 파일에 GEMINI_API_KEY를 넣고 저장한 뒤 다시 눌러 주세요.")
+        yield _sse("error", "아직 Gemini API 키가 없어요. 서버의 GEMINI_API_KEY 설정을 확인해 주세요.")
         return
     yield _sse("status", "thinking")
     text = ""
     blocked = False
-    try:
-        stream = _gemini().models.generate_content_stream(
-            model=MODEL,
-            contents=_contents(c["active"]["messages"]),
-            config=types.GenerateContentConfig(
-                system_instruction=PERSONA + "\n\n" + build_system(c),
-                temperature=0.8,
-                safety_settings=SAFETY,
-            ),
-        )
-        for chunk in stream:
-            if chunk.text:
-                text += chunk.text
-                yield _sse("delta", chunk.text)
-            cand = chunk.candidates[0] if chunk.candidates else None
-            if cand and cand.finish_reason and cand.finish_reason.name not in ("STOP", "MAX_TOKENS", "FINISH_REASON_UNSPECIFIED"):
-                blocked = True
-            if chunk.prompt_feedback and chunk.prompt_feedback.block_reason:
-                blocked = True
-    except errors.APIError as e:
-        yield _sse("error", _gemini_error(e))
-        return
-    except Exception as e:  # 네트워크 오류 등
-        _log_error("Gemini 호출 실패", e)
-        yield _sse("error", _gemini_error(e))
-        return
+    for attempt, model in enumerate(ATTEMPT_MODELS):
+        try:
+            stream = _gemini().models.generate_content_stream(
+                model=model,
+                contents=_contents(c["active"]["messages"]),
+                config=types.GenerateContentConfig(
+                    system_instruction=PERSONA + "\n\n" + build_system(c),
+                    temperature=0.8,
+                    safety_settings=SAFETY,
+                ),
+            )
+            for chunk in stream:
+                if chunk.text:
+                    text += chunk.text
+                    yield _sse("delta", chunk.text)
+                cand = chunk.candidates[0] if chunk.candidates else None
+                if cand and cand.finish_reason and cand.finish_reason.name not in ("STOP", "MAX_TOKENS", "FINISH_REASON_UNSPECIFIED"):
+                    blocked = True
+                if chunk.prompt_feedback and chunk.prompt_feedback.block_reason:
+                    blocked = True
+            break
+        except errors.ServerError as e:
+            # Gemini가 잠깐 바쁠 때가 많다. 아직 아무것도 보내지 않았다면 잠시 뒤 다시 시도한다
+            if text or attempt == len(ATTEMPT_MODELS) - 1:
+                yield _sse("error", _gemini_error(e))
+                return
+            time.sleep(1.5 * (attempt + 1))
+        except errors.APIError as e:
+            yield _sse("error", _gemini_error(e))
+            return
+        except Exception as e:  # 네트워크 오류 등
+            _log_error("Gemini 호출 실패", e)
+            yield _sse("error", _gemini_error(e))
+            return
 
     clean = text.strip()
     if blocked or not clean:
         clean = BLOCKED_REPLY
         yield _sse("replace", clean)
 
-    def append(cl):
-        cl["active"]["messages"].append({"role": "assistant", "content": clean, "at": _now()})
-    c = store.update(client_id, append)
-    yield _sse("done", {"progress": _public(c)["progress"]})
-
+    c["active"]["messages"].append({"role": "assistant", "content": clean, "at": _now()})
     user_turns = sum(1 for m in c["active"]["messages"] if m["role"] == "user" and not m.get("hidden"))
-    if user_turns and user_turns % REVIEW_EVERY == 0:
-        threading.Thread(target=_review_safe, args=(client_id,), daemon=True).start()
+    # 몇 번 주고받을 때마다 브라우저가 /api/review로 기억을 중간 갱신한다
+    yield _sse("done", {**_reply(c), "review_due": bool(user_turns and user_turns % REVIEW_EVERY == 0)})
 
 
 # ---------- 기억 갱신 (회기 검토) ----------
 
-def _review_safe(client_id: str):
-    try:
-        _review(client_id, final=False)
-    except Exception as e:  # 중간 갱신 실패는 상담을 방해하지 않는다
-        _log_error("중간 기억 갱신 실패", e)
-
-
-def _review(client_id: str, final: bool) -> dict | None:
-    c = store.load(client_id)
-    if not c or not c["active"]:
-        return None
+def _review(c: dict) -> dict | None:
+    """이번 회기를 검토해 기록을 어떻게 고칠지 받아 온다."""
     transcript = "\n".join(
         f"{'상담사' if m['role'] == 'assistant' else '내담자'}: {m['content']}"
         for m in c["active"]["messages"] if not m.get("hidden")
@@ -226,9 +241,8 @@ def _review(client_id: str, final: bool) -> dict | None:
         + f"\n\n# 기존 사례개념화(JSON)\n{json.dumps(c.get('formulation', {}), ensure_ascii=False)}"
         + f"\n\n# 이번 회기 대화\n{transcript}"
     )
-    resp = _gemini().models.generate_content(
-        model=MODEL,
-        contents=prompt,
+    resp = _generate(
+                contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=REVIEW_INSTRUCTIONS,
             temperature=0.2,
@@ -238,41 +252,41 @@ def _review(client_id: str, final: bool) -> dict | None:
         ),
     )
     try:
-        result = json.loads(resp.text or "")
+        return json.loads(resp.text or "")
     except json.JSONDecodeError:
         return None
-    f = result.get("formulation") or {}
 
-    def apply(cl):
-        prof = cl["profile"]
-        if result.get("nickname") and not prof.get("nickname"):
-            prof["nickname"] = result["nickname"][:20]
-        for u in result.get("intake_updates", []):
-            item = u.get("item", "")
-            content = u.get("content", "").strip()
-            if not content:
-                continue
-            item = item if item in INTAKE_ITEMS else next(
-                (i for i in INTAKE_ITEMS if item and (item in i or i in item)), None)
-            if not item:
-                continue
-            prev = prof["intake"].get(item)
-            prof["intake"][item] = f"{prev} / {content}" if prev and content not in prev else content
-            prof["intake_covered"][item] = True
-        if f:
-            cl["formulation"] = {k: v for k, v in f.items() if isinstance(v, list)}
-        if final and cl["active"]:
-            cl["sessions"].append({
-                "number": cl["active"]["number"],
-                "date": cl["active"]["started"][:10],
-                "title": result.get("session_title", ""),
-                "summary": result.get("summary", ""),
-                "homework": result.get("homework", ""),
-                "open_threads": result.get("open_threads", ""),
-                "messages": cl["active"]["messages"],
-            })
-            cl["active"] = None
-    return store.update(client_id, apply)
+
+def _apply_review(c: dict, result: dict, final: bool) -> None:
+    prof = c["profile"]
+    if result.get("nickname") and not prof.get("nickname"):
+        prof["nickname"] = result["nickname"][:20]
+    for u in result.get("intake_updates", []):
+        item = u.get("item", "")
+        content = u.get("content", "").strip()
+        if not content:
+            continue
+        item = item if item in INTAKE_ITEMS else next(
+            (i for i in INTAKE_ITEMS if item and (item in i or i in item)), None)
+        if not item:
+            continue
+        prev = prof["intake"].get(item)
+        prof["intake"][item] = f"{prev} / {content}" if prev and content not in prev else content
+        prof["intake_covered"][item] = True
+    f = result.get("formulation") or {}
+    if f:
+        c["formulation"] = {k: v for k, v in f.items() if isinstance(v, list)}
+    if final and c["active"]:
+        c["sessions"].append({
+            "number": c["active"]["number"],
+            "date": c["active"]["started"][:10],
+            "title": result.get("session_title", ""),
+            "summary": result.get("summary", ""),
+            "homework": result.get("homework", ""),
+            "open_threads": result.get("open_threads", ""),
+            "messages": c["active"]["messages"],
+        })
+        c["active"] = None
 
 
 # ---------- API ----------
@@ -281,87 +295,29 @@ class NewClient(BaseModel):
     nickname: str = ""
 
 
-class UserMessage(BaseModel):
+class ClientBody(BaseModel):
+    client: dict
+
+
+class UserMessage(ClientBody):
     text: str
     sct_stem: str | None = None
+
+
+class TestAnswers(ClientBody):
+    answers: list[int]
+
+
+class SctAnswers(ClientBody):
+    texts: list[str]
 
 
 @app.get("/api/health")
 def health():
     if not _has_key():
         return {"ok": False, "model": MODEL,
-                "problem": "Gemini API 키가 아직 없어요. README 안내대로 .env 파일에 GEMINI_API_KEY를 넣어 주세요."}
+                "problem": "Gemini API 키가 아직 없어요. GEMINI_API_KEY를 설정해 주세요 (README 참고)."}
     return {"ok": True, "model": MODEL}
-
-
-@app.get("/api/clients")
-def clients():
-    return store.list_clients()
-
-
-@app.post("/api/clients")
-def create_client(body: NewClient):
-    return _public(store.new_client(body.nickname.strip()[:20]))
-
-
-@app.get("/api/clients/{client_id}")
-def get_client(client_id: str):
-    return _public(_get(client_id))
-
-
-@app.delete("/api/clients/{client_id}")
-def delete_client(client_id: str):
-    store.delete(client_id)
-    return {"ok": True}
-
-
-@app.post("/api/clients/{client_id}/session/start")
-def start_session(client_id: str):
-    c = _get(client_id)
-    if c["active"] and len(c["active"]["messages"]) > 1:
-        raise HTTPException(409, "이미 진행 중인 회기가 있어요")
-
-    def begin(cl):
-        cl["active"] = {
-            "number": len(cl["sessions"]) + 1,
-            "started": _now(),
-            "messages": [{"role": "user", "content": SESSION_START_CUE, "hidden": True, "at": _now()}],
-        }
-    store.update(client_id, begin)
-    return StreamingResponse(_stream_reply(client_id), media_type="text/event-stream")
-
-
-@app.post("/api/clients/{client_id}/message")
-def send_message(client_id: str, body: UserMessage):
-    c = _get(client_id)
-    if not c["active"]:
-        raise HTTPException(409, "진행 중인 회기가 없어요")
-    text = body.text.strip()[:4000]
-    if not text:
-        raise HTTPException(400, "빈 메시지예요")
-
-    def add(cl):
-        entry = {"role": "user", "content": text, "at": _now()}
-        if body.sct_stem:
-            stem = body.sct_stem.strip()
-            sct = next((s for s in SCT_STEMS if s["stem"] == stem), {"id": stem, "domain": "기타"})
-            entry["content"] = f"「{stem}」 → {text}"
-            entry["sct"] = {"stem": stem, "answer": text}
-            if not any(r["id"] == sct["id"] for r in cl["sct"]):
-                cl["sct"].append({"id": sct["id"], "domain": sct["domain"], "stem": stem,
-                                  "answer": text, "session": cl["active"]["number"]})
-        msgs = cl["active"]["messages"]
-        # 직전 답변이 실패해 user 메시지가 연달아 쌓이면 하나로 합친다 (숨은 시작 신호는 따로 둔다)
-        if msgs and msgs[-1]["role"] == "user" and not msgs[-1].get("hidden"):
-            msgs[-1]["content"] += "\n\n" + entry["content"]
-        else:
-            msgs.append(entry)
-    store.update(client_id, add)
-    return StreamingResponse(_stream_reply(client_id), media_type="text/event-stream")
-
-
-class TestAnswers(BaseModel):
-    answers: list[int]
 
 
 @app.get("/api/tests")
@@ -369,48 +325,148 @@ def list_tests():
     return tests.public_tests()
 
 
-class SctAnswers(BaseModel):
-    texts: list[str]
+@app.post("/api/new-client")
+def create_client(body: NewClient):
+    return _reply(store.new_record(body.nickname.strip()[:20]))
 
 
-@app.post("/api/clients/{client_id}/tests/sct")
-def submit_sct(client_id: str, body: SctAnswers):
-    _get(client_id)
+@app.post("/api/view")
+def view(body: ClientBody):
+    return _reply(_record(body.client))
+
+
+@app.get("/api/legacy/{client_id}")
+def legacy_client(client_id: str):
+    """예전 버전이 이 컴퓨터에 저장한 기록을 브라우저로 옮길 때 쓴다."""
+    c = store.load_legacy(client_id)
+    if c is None:
+        raise HTTPException(404, "기록이 없어요")
+    return _reply(c)
+
+
+@app.post("/api/session/start")
+def start_session(body: ClientBody):
+    c = _record(body.client)
+    if c["active"] and len(c["active"]["messages"]) > 1:
+        raise HTTPException(409, "이미 진행 중인 회기가 있어요")
+    c["active"] = {
+        "number": len(c["sessions"]) + 1,
+        "started": _now(),
+        "messages": [{"role": "user", "content": SESSION_START_CUE, "hidden": True, "at": _now()}],
+    }
+    return StreamingResponse(_stream_reply(c), media_type="text/event-stream")
+
+
+@app.post("/api/message")
+def send_message(body: UserMessage):
+    c = _record(body.client)
+    if not c["active"]:
+        raise HTTPException(409, "진행 중인 회기가 없어요")
+    text = body.text.strip()[:4000]
+    if not text:
+        raise HTTPException(400, "빈 메시지예요")
+    entry = {"role": "user", "content": text, "at": _now()}
+    if body.sct_stem:
+        stem = body.sct_stem.strip()
+        sct = next((s for s in SCT_STEMS if s["stem"] == stem), {"id": stem, "domain": "기타"})
+        entry["content"] = f"「{stem}」 → {text}"
+        entry["sct"] = {"stem": stem, "answer": text}
+        if not any(r["id"] == sct["id"] for r in c["sct"]):
+            c["sct"].append({"id": sct["id"], "domain": sct["domain"], "stem": stem,
+                             "answer": text, "session": c["active"]["number"]})
+    msgs = c["active"]["messages"]
+    # 직전 답변이 실패해 user 메시지가 연달아 쌓이면 하나로 합친다 (숨은 시작 신호는 따로 둔다)
+    if msgs and msgs[-1]["role"] == "user" and not msgs[-1].get("hidden"):
+        msgs[-1]["content"] += "\n\n" + entry["content"]
+    else:
+        msgs.append(entry)
+    return StreamingResponse(_stream_reply(c), media_type="text/event-stream")
+
+
+@app.post("/api/review")
+def review(body: ClientBody):
+    """회기 중간 기억 갱신. 그 사이 대화가 이어졌을 수 있어, 바뀐 칸(profile, formulation)만 돌려준다."""
+    c = _record(body.client)
+    if not c["active"] or not _has_key():
+        return {"profile": c["profile"], "formulation": c["formulation"]}
+    try:
+        result = _review(c)
+    except Exception as e:
+        _log_error("중간 기억 갱신 실패", e)
+        result = None
+    if result:
+        _apply_review(c, result, final=False)
+    return {"profile": c["profile"], "formulation": c["formulation"]}
+
+
+@app.post("/api/session/end")
+def end_session(body: ClientBody):
+    c = _record(body.client)
+    if not c["active"]:
+        raise HTTPException(409, "진행 중인 회기가 없어요")
+    real = [m for m in c["active"]["messages"] if not m.get("hidden")]
+    if not any(m["role"] == "user" for m in real):
+        c["active"] = None
+        return _reply(c)
+    try:
+        result = _review(c)
+    except Exception as e:
+        _log_error("회기 정리 실패", e)
+        raise HTTPException(502, _gemini_error(e))
+    if result is None:
+        raise HTTPException(502, "회기 정리에 실패했어요. 다시 시도해 주세요.")
+    _apply_review(c, result, final=True)
+    return _reply(c)
+
+
+@app.post("/api/tests/sct")
+def submit_sct(body: SctAnswers):
+    c = _record(body.client)
     if len(body.texts) != len(SCT_STEMS):
         raise HTTPException(400, "응답 수가 올바르지 않아요")
-
-    def save(cl):
-        by_id = {r["id"]: r for r in cl["sct"]}
-        for s, text in zip(SCT_STEMS, body.texts):
-            text = text.strip()[:500]
-            if text:  # 다시 쓰면 새 응답으로 바꾼다
-                by_id[s["id"]] = {"id": s["id"], "domain": s["domain"], "stem": s["stem"],
-                                  "answer": text, "session": 0, "date": _now()[:10]}
-        cl["sct"] = list(by_id.values())
-    c = store.update(client_id, save)
-    return {"answered": sum(1 for t in body.texts if t.strip()), "total": len(c["sct"])}
+    by_id = {r["id"]: r for r in c["sct"]}
+    for s, text in zip(SCT_STEMS, body.texts):
+        text = text.strip()[:500]
+        if text:  # 다시 쓰면 새 응답으로 바꾼다
+            by_id[s["id"]] = {"id": s["id"], "domain": s["domain"], "stem": s["stem"],
+                              "answer": text, "session": 0, "date": _now()[:10]}
+    c["sct"] = list(by_id.values())
+    return _reply(c)
 
 
-@app.post("/api/clients/{client_id}/interpretation")
-def interpret(client_id: str):
+@app.post("/api/tests/{test_id}")
+def submit_test(test_id: str, body: TestAnswers):
+    c = _record(body.client)
+    if test_id not in tests.TESTS or tests.TESTS[test_id]["kind"] == "text":
+        raise HTTPException(404, "없는 검사예요")
+    try:
+        result = tests.score(test_id, body.answers)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    result["date"] = _now()[:10]
+    c["tests"].append(result)
+    return _reply(c)
+
+
+@app.post("/api/interpretation")
+def interpret(body: ClientBody):
     """지금까지의 검사 결과를 묶어 해석을 만든다."""
-    c = _get(client_id)
-    if not c.get("tests") and not c["sct"]:
+    c = _record(body.client)
+    if not c["tests"] and not c["sct"]:
         raise HTTPException(400, "해석할 검사 결과가 아직 없어요")
     if not _has_key():
         raise HTTPException(400, "Gemini API 키가 없어 해석을 만들 수 없어요.")
     material = "\n".join([
         f"# 내담자: {c['profile'].get('nickname') or '(이름 없음)'}",
-        "# 검사 결과", *tests.describe_for_counselor(c.get("tests", [])),
+        "# 검사 결과", *tests.describe_for_counselor(c["tests"]),
         "# 기질·성격 차원의 의미",
         *[f"- {name}({group}): {meaning}" for name, group, meaning in tests.TCI_DIMS.values()],
         "# 문장완성 응답",
         *[f"- [{r['domain']}] 「{r['stem']}」 → {r['answer']}" for r in c["sct"]],
     ])
     try:
-        resp = _gemini().models.generate_content(
-            model=MODEL,
-            contents=material,
+        resp = _generate(
+                        contents=material,
             config=types.GenerateContentConfig(
                 system_instruction=INTERP_INSTRUCTIONS,
                 temperature=0.5,
@@ -426,41 +482,8 @@ def interpret(client_id: str):
         _log_error("해석 실패", e)
         raise HTTPException(502, _gemini_error(e))
     result["date"] = _now()[:10]
-    c = store.update(client_id, lambda cl: cl.__setitem__("interpretation", result))
-    return _public(c)["interpretation"]
-
-
-@app.post("/api/clients/{client_id}/tests/{test_id}")
-def submit_test(client_id: str, test_id: str, body: TestAnswers):
-    _get(client_id)
-    if test_id not in tests.TESTS:
-        raise HTTPException(404, "없는 검사예요")
-    try:
-        result = tests.score(test_id, body.answers)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    result["date"] = _now()[:10]
-    store.update(client_id, lambda cl: cl.setdefault("tests", []).append(result))
-    return {k: v for k, v in result.items() if k != "answers"}
-
-
-@app.post("/api/clients/{client_id}/session/end")
-def end_session(client_id: str):
-    c = _get(client_id)
-    if not c["active"]:
-        raise HTTPException(409, "진행 중인 회기가 없어요")
-    real = [m for m in c["active"]["messages"] if not m.get("hidden")]
-    if not any(m["role"] == "user" for m in real):
-        store.update(client_id, lambda cl: cl.__setitem__("active", None))
-        return _public(_get(client_id))
-    try:
-        updated = _review(client_id, final=True)
-    except Exception as e:
-        _log_error("회기 정리 실패", e)
-        raise HTTPException(502, _gemini_error(e))
-    if updated is None:
-        raise HTTPException(502, "회기 정리에 실패했어요. 다시 시도해 주세요.")
-    return _public(updated)
+    c["interpretation"] = result
+    return _reply(c)
 
 
 @app.get("/")

@@ -1,11 +1,12 @@
 const $ = (s) => document.querySelector(s);
 const SCT_RE = /\[\[문장완성:\s*(.+?)\]\]/;
-let state = null;   // 서버의 내담자 상태
+let state = null;   // 화면용 내담자 상태 (서버가 기록에서 만들어 준 모양)
+let record = null;  // 전체 기록. 이 브라우저에만 저장되고 요청마다 서버로 보낸다
 let busy = false;
 
 const storage = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } },
   del(k) { try { localStorage.removeItem(k); } catch {} },
 };
 
@@ -19,40 +20,81 @@ async function api(path, opts = {}) {
   return res;
 }
 
+// ---------- 기록 (이 브라우저에만 저장) ----------
+
+const RECORDS_KEY = "yunseul.records";
+
+function loadRecords() {
+  try { return JSON.parse(storage.get(RECORDS_KEY)) || {}; } catch { return {}; }
+}
+
+function saveRecord(rec) {
+  const all = loadRecords();
+  all[rec.id] = { ...rec, savedAt: new Date().toISOString() };
+  if (!storage.set(RECORDS_KEY, JSON.stringify(all))) {
+    alert("이 브라우저에 기록을 저장하지 못했어요. 시크릿 창이거나 저장 공간이 부족하면 상담 내용이 남지 않아요.");
+  }
+}
+
+function removeRecord(id) {
+  const all = loadRecords();
+  delete all[id];
+  storage.set(RECORDS_KEY, JSON.stringify(all));
+}
+
+// 서버 응답({client, view})을 받아 저장하고 화면 상태를 바꾼다
+function accept(res) {
+  record = res.client;
+  state = res.view;
+  saveRecord(record);
+}
+
+// 지금 기록을 함께 보내는 요청
+function post(path, extra = {}) {
+  return api(path, { method: "POST", body: JSON.stringify({ client: record, ...extra }) }).then((r) => r.json());
+}
+
 // ---------- 입장 ----------
 
 async function showWelcome() {
   $("#room").hidden = true;
   $("#welcome").hidden = false;
-  const [clients, health] = await Promise.all([
-    api("/api/clients").then((r) => r.json()),
-    api("/api/health").then((r) => r.json()),
-  ]);
-  $("#keyWarn").hidden = health.ok;
-  $("#keyWarn").textContent = health.problem || "";
+  const clients = Object.values(loadRecords()).sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
   const list = $("#clientList");
   list.innerHTML = "";
   $("#returning").hidden = clients.length === 0;
   for (const c of clients) {
     const li = document.createElement("li");
     const b = document.createElement("button");
-    b.innerHTML = `<span></span><small>${c.sessions ? `${c.sessions}회기 함께함` : "첫 상담 전"}</small>`;
-    b.firstChild.textContent = c.nickname;
+    const n = c.sessions?.length || 0;
+    b.innerHTML = `<span></span><small>${n ? `${n}회기 함께함` : "첫 상담 전"}</small>`;
+    b.firstChild.textContent = c.profile?.nickname || "이름 없는 내담자";
     b.onclick = () => enter(c.id);
     li.append(b);
     list.append(li);
   }
+  const health = await api("/api/health").then((r) => r.json()).catch(() => ({ ok: false, problem: "서버에 연결하지 못했어요." }));
+  $("#keyWarn").hidden = health.ok;
+  $("#keyWarn").textContent = health.problem || "";
 }
 
 $("#newForm").onsubmit = async (e) => {
   e.preventDefault();
-  const c = await api("/api/clients", { method: "POST", body: JSON.stringify({ nickname: $("#nickname").value }) }).then((r) => r.json());
-  enter(c.id);
+  try {
+    const res = await api("/api/new-client", { method: "POST", body: JSON.stringify({ nickname: $("#nickname").value }) }).then((r) => r.json());
+    accept(res);
+    enter(record.id);
+  } catch (err) {
+    alert(err.message);
+  }
 };
 
 async function enter(id) {
   try {
-    state = await api(`/api/clients/${id}`).then((r) => r.json());
+    record = loadRecords()[id];
+    // 예전 버전이 이 컴퓨터에 저장한 기록이면 브라우저로 옮겨 온다
+    if (!record) accept(await api(`/api/legacy/${id}`).then((r) => r.json()));
+    else accept(await post("/api/view"));
   } catch {
     storage.del("clientId");
     return showWelcome();
@@ -180,7 +222,9 @@ function setStatus(s) {
   $("#sendBtn").disabled = s !== "idle";
 }
 
-async function streamFrom(path, body) {
+async function streamFrom(path, extra = {}) {
+  const body = { client: record, ...extra };
+  let reviewDue = false;
   busy = true;
   setStatus("thinking");
   document.querySelectorAll(".sct-card").forEach((c) => c.remove());
@@ -190,7 +234,7 @@ async function streamFrom(path, body) {
   let text = "";
   let failed = false;
   try {
-    const res = await api(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+    const res = await api(path, { method: "POST", body: JSON.stringify(body) });
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
@@ -216,8 +260,9 @@ async function streamFrom(path, body) {
           bubble.closest(".msg").classList.add("error");
           bubble.textContent = data;
         } else if (ev === "done") {
-          state.progress = data.progress;
-          renderProgress();
+          // 답변까지 들어간 기록을 이 브라우저에 저장한다
+          accept(data);
+          reviewDue = data.review_due;
         }
       }
     }
@@ -229,16 +274,28 @@ async function streamFrom(path, body) {
   if (!failed) setCounselorText(bubble, text, true);
   busy = false;
   setStatus("idle");
-  // 기록 동기화 (중간 기억 갱신 반영)
-  const fresh = await api(`/api/clients/${state.id}`).then((r) => r.json()).catch(() => null);
-  if (fresh) { state = fresh; renderMemory(); }
+  renderMemory();
+  if (reviewDue) reviewInBackground();
   if (!failed) $("#input").focus();
   return failed ? bubble.textContent : null;
 }
 
+// 몇 번 주고받을 때마다 윤슬의 기억(기본 정보, 사례개념화)을 중간 갱신한다
+async function reviewInBackground() {
+  const id = record.id;
+  try {
+    const r = await post("/api/review");
+    // 그 사이 대화가 이어졌을 수 있어, 최신 기록에 바뀐 칸만 합친다
+    if (record.id !== id) return;
+    record = { ...record, profile: r.profile, formulation: r.formulation };
+    accept(await post("/api/view"));
+    renderMemory();
+  } catch { /* 중간 갱신 실패는 상담을 방해하지 않는다 */ }
+}
+
 async function send(text, stem) {
   addClient(text, stem);
-  await streamFrom(`/api/clients/${state.id}/message`, { text, sct_stem: stem || null });
+  await streamFrom("/api/message", { text, sct_stem: stem || null });
 }
 
 $("#startBtn").onclick = () => startSession();
@@ -251,7 +308,7 @@ async function startSession() {
   // 첫 인사를 받는 동안 대화 화면을 보여 준다
   show("chat");
   $("#composer").hidden = true;
-  const error = await streamFrom(`/api/clients/${state.id}/session/start`);
+  const error = await streamFrom("/api/session/start");
   if (error) {
     // 시작에 실패하면 시작 화면으로 돌아가 이유를 보여 준다
     renderMode();
@@ -345,7 +402,7 @@ async function answer(v) {
     const body = t.kind === "text"
       ? { texts: t.items.map((_, i) => run.answers[i] || "") }
       : { answers: run.answers };
-    await api(`/api/clients/${state.id}/tests/${t.id}`, { method: "POST", body: JSON.stringify(body) });
+    accept(await post(`/api/tests/${t.id}`, body));
     run.finished++;
   } catch (e) {
     busy = false;
@@ -374,7 +431,6 @@ $("#testQuit").onclick = () => finishTests(run.finished > 0);
 $("#testBtn").onclick = () => startTests();
 
 async function finishTests(reinterpret) {
-  state = await api(`/api/clients/${state.id}`).then((r) => r.json());
   renderMemory();
   if (!state.tests.length && !state.sct.length) return renderMode();
   showResults(reinterpret);
@@ -441,8 +497,9 @@ async function showResults(reinterpret) {
   box.innerHTML = `<div class="interp-loading"><span class="typing"><i></i><i></i><i></i></span> 윤슬이 결과를 함께 읽고 해석하고 있어요…</div>`;
   $("#resultGo").disabled = true;
   try {
-    state.interpretation = await api(`/api/clients/${state.id}/interpretation`, { method: "POST" }).then((r) => r.json());
+    accept(await post("/api/interpretation"));
     renderInterpretation(state.interpretation);
+    renderMemory();
   } catch (e) {
     box.innerHTML = `<p class="warn"></p><button class="link" id="interpRetry">다시 해석하기</button>`;
     box.querySelector("p").textContent = e.message;
@@ -522,7 +579,7 @@ $("#endBtn").onclick = async () => {
   setStatus("thinking");
   $("#status").textContent = "오늘 이야기를 정리하고 있어요…";
   try {
-    state = await api(`/api/clients/${state.id}/session/end`, { method: "POST" }).then((r) => r.json());
+    accept(await post("/api/session/end"));
     renderMemory();
     renderMode();
     if (window.innerWidth <= 860) $("#memory").classList.add("open");
@@ -646,12 +703,12 @@ function renderMemory() {
 $("#openMemory").onclick = () => $("#memory").classList.add("open");
 $("#closeMemory").onclick = () => $("#memory").classList.remove("open");
 $("#scrim").onclick = () => $("#memory").classList.remove("open");
-$("#leave").onclick = () => { storage.del("clientId"); state = null; showWelcome(); };
+$("#leave").onclick = () => { storage.del("clientId"); state = record = null; showWelcome(); };
 $("#forget").onclick = async () => {
-  if (!confirm("윤슬이 기억하는 모든 기록(상담 내용, 문장완성, 이해한 것들)을 지울까요? 되돌릴 수 없어요.")) return;
-  await api(`/api/clients/${state.id}`, { method: "DELETE" });
+  if (!confirm("윤슬이 기억하는 모든 기록(상담 내용, 문장완성, 이해한 것들)을 이 브라우저에서 지울까요? 되돌릴 수 없어요.")) return;
+  removeRecord(state.id);
   storage.del("clientId");
-  state = null;
+  state = record = null;
   showWelcome();
 };
 

@@ -1,5 +1,6 @@
 """마음상담 '윤슬' — 기억하는 AI 심리상담 앱 서버 (Google Gemini 사용)."""
 
+import hashlib
 import json
 import os
 import time
@@ -323,7 +324,11 @@ def health():
     if not _has_key():
         return {"ok": False, "model": MODEL,
                 "problem": "Gemini API 키가 아직 없어요. GEMINI_API_KEY를 설정해 주세요 (README 참고)."}
-    return {"ok": True, "model": MODEL}
+    # 임시 점검: 키 값을 드러내지 않고 같은 키인지 비교하기 위한 해시 앞부분과 길이
+    key = _api_key()
+    raw = os.getenv("GEMINI_API_KEY") or ""
+    return {"ok": True, "model": MODEL, "key_fp": hashlib.sha256(key.encode()).hexdigest()[:8],
+            "key_len": len(key), "raw_len": len(raw)}
 
 
 @app.get("/api/tests")
